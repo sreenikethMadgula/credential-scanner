@@ -8,6 +8,11 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/iam"
+	// "github.com/aws/aws-sdk-go/service/s3"
 )
 
 func main() {
@@ -17,9 +22,6 @@ func main() {
 	}
 
 	repoPath := os.Args[1]
-
-	// fmt.Println(getFolderNameFromRepoPath(repoPath))
-	// return
 
 	// Step 1: Clone the Git repository locally
 	err := cloneRepository(repoPath)
@@ -34,6 +36,7 @@ func main() {
 	err = os.Mkdir("logs", os.ModePerm)
 	if err != nil {
 		// log.Fatal(err)
+		fmt.Println("Error creating folder - logs:",err)
 	}
 
 	f, err := os.OpenFile("logs/"+dirName+"-result.txt", os.O_CREATE|os.O_WRONLY, 0644)
@@ -49,6 +52,7 @@ func main() {
 
 	err = f.Close()
 	if err != nil {
+		fmt.Println("Error closing file:", err)
 		log.Fatal(err)
 	}
 
@@ -84,7 +88,7 @@ func scanBranch(branch string, dirName string, f *os.File) error {
 		return err
 	}
 
-	msg := fmt.Sprintf("In branch %s\n",branch)
+	msg := fmt.Sprintf("In branch %s\n", branch)
 	fmt.Println(msg)
 	f.Write([]byte(msg))
 
@@ -93,11 +97,6 @@ func scanBranch(branch string, dirName string, f *os.File) error {
 		return nil
 	}
 	for _, commit := range commits {
-		// err = switchToRef(commit, dirName)
-		// if err != nil {
-		// 	fmt.Println("Error switching to commit:", err)
-		// 	return err
-		// }
 		err = scanCommit(commit, dirName, f)
 		if err != nil {
 			fmt.Println("Error scanning files in commit:", err)
@@ -167,12 +166,11 @@ func scanCommit(commit string, dirName string, f *os.File) error {
 
 	// switch back to HEAD
 	cmd := exec.Command("git", "-C", dirName, "switch", "-")
-	output,err := cmd.Output()
+	err = cmd.Run()
 	if err != nil {
-		fmt.Println("Error switching back to HEAD:",err)
+		fmt.Println("Error switching back to HEAD:", err)
 		return err
 	}
-	fmt.Println(string(output))
 
 	return nil
 }
@@ -209,16 +207,18 @@ func checkIAMKeys(filePath string, f *os.File) error {
 	// Regular expression to find potential IAM keys in the file content
 	// AWS IAM keys have the format: "AKIA" followed by 20 alphanumeric characters
 	// and "AWS" followed by 40 alphanumeric characters.
-	regex := regexp.MustCompile(`(?m)(?i)AKIA[0-9A-Z]{16}|AWS[0-9A-Z]{38}`)
+	// regex := regexp.MustCompile(`(?m)(?i)AKIA[0-9A-Z]{16}|AWS[0-9A-Z]{38}`)
+	regex := regexp.MustCompile(`(?m)(?i)AKIA[0-9A-Z]{16}\s+\S{40}|AWS[0-9A-Z]{38}\s+?\S{40}`)
 
 	matches := regex.FindAllString(string(fileContent), -1)
 	for _, match := range matches {
+		matchArr := regexp.MustCompile(`[^\S]+`).Split(match, 2)
+		accessKeyID, secretAccessKey := matchArr[0], matchArr[1]
 		// Step 4: Validate each IAM key by invoking a basic AWS API
 		result := ""
-		if isValidIAMKey(match) {
-			result = fmt.Sprintf("\t\tValid IAM key found in file %s: %s\n", filePath, match)
+		if isValidIAMKey(accessKeyID,secretAccessKey) {
+			result = fmt.Sprintf("\t\tValid IAM key found in file %s:\n\t\t\tAccess Key: %s\n\t\t\tSecret Access Key: %s\n\n", filePath, accessKeyID, secretAccessKey)
 			fmt.Printf(result)
-			// data := []byte(result)
 			_, err := f.Write([]byte(result))
 			if err != nil {
 				return err
@@ -228,8 +228,9 @@ func checkIAMKeys(filePath string, f *os.File) error {
 	return nil
 }
 
-func isValidIAMKey(iamKey string) bool {
-	return strings.HasPrefix(iamKey, "AKIA")
+func isValidIAMKey(accessKeyID string, secretAccessKey string) bool {
+	// return strings.HasPrefix(iamKey, "AKIA")
+	return validateIAMKeys(accessKeyID, secretAccessKey)
 }
 
 // Clone the repository locally; return any cloning errors
@@ -263,13 +264,7 @@ func getAllBranches(dirName string) ([]string, error) {
 }
 
 func switchToRef(ref string, dirName string) error {
-	// fmt.Println("ref:",ref[1:len(ref)-1], dirName)
-	// if ref[0] == "\'" || ref[0] == "\"" {
-	// 	ref = ref[1:len(ref)-1]
-	// }
-
 	cmd := exec.Command("git", "-C", dirName, "checkout", ref)
-	// fmt.Println("dir",cmd.Dir)
 	err := cmd.Run()
 	if err != nil {
 		fmt.Println("Error switching to ref:", ref, err)
@@ -286,4 +281,38 @@ func getAllCommits(dirName string) ([]string, error) {
 	}
 	commits := strings.Split(strings.TrimSpace(string(output)), "\n")
 	return commits, nil
+}
+
+func validateIAMKeys(accessKeyID, secretAccessKey string) bool {
+	// Create a new AWS session with the IAM keys
+	sess, err := session.NewSession(&aws.Config{
+		Region:      aws.String("ap-south-1"),
+		Credentials: credentials.NewStaticCredentials(accessKeyID, secretAccessKey, ""),
+	})
+	if err != nil {
+		fmt.Println("Error creating AWS session:", err)
+		return false
+	}
+
+	// Create a new iam service client using the session
+	svc := iam.New(sess)
+	
+	// Perform a basic API call to check the IAM keys' validity
+	d, err := svc.ListGroups(&iam.ListGroupsInput{})
+	if err != nil {
+		// fmt.Println("Invalid IAM keys:", err)
+
+		// InvalidClientTokenId error occurs for invalid keys.
+		// If keys are valid, if the role doesn't have permission
+		// to list groups, it returns an AccessDenied error
+		if strings.Contains(err.Error(), "InvalidClientTokenId") {
+			return false
+		}
+		return true
+	}
+
+	fmt.Print(d)
+
+	// IAM keys are valid
+	return true
 }
