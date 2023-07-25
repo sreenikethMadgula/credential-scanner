@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	// "github.com/aws/aws-sdk-go/service/s3"
 )
 
@@ -25,13 +26,12 @@ func (r *RepoScanner) ScanRepo() error {
 	}
 
 	for _, branch := range branches {
-
 		err = r.scanBranch(branch, dirName)
 		if err != nil {
 			fmt.Println("Error scanning branch:", err)
-			return err
 		}
 	}
+
 	return nil
 
 }
@@ -110,6 +110,7 @@ func switchToRef(ref string, dirName string) error {
 		fmt.Println("Error switching to ref:", ref, err)
 		return err
 	}
+
 	return nil
 }
 
@@ -129,6 +130,7 @@ func scanDir(dirName string, out *os.File, cv CredentialValidator) error {
 		return err
 	}
 
+	wg := sync.WaitGroup{}
 	for _, file := range files {
 		if file.IsDir() {
 			err = scanDir(dirName+"/"+file.Name(), out, cv)
@@ -136,24 +138,34 @@ func scanDir(dirName string, out *os.File, cv CredentialValidator) error {
 				return err
 			}
 		} else {
-			f, err := os.Open(dirName + "/" + file.Name())
-			if err != nil {
-				return err
-			}
+			wg.Add(1)
+			go func(wg *sync.WaitGroup, name string) {
 
-			if err := scanFile(cv, f, out); err != nil {
-				switch err {
-				case errorInvalidCreds, errorNoMatch:
-					continue
-				default:
-					return err
+				defer wg.Done()
+				f, err := os.Open(dirName + "/" + name)
+				if err != nil {
+					log.Println(err)
+					return
 				}
-			}
 
-			_ = f.Close()
+				defer f.Close()
 
+				if err := scanFile(cv, f, out); err != nil {
+					switch err {
+					case errorInvalidCreds, errorNoMatch:
+						return
+					default:
+						log.Println(err)
+						return
+					}
+				}
+
+			}(&wg, file.Name())
 		}
+
 	}
+
+	wg.Wait()
 	return nil
 }
 
@@ -168,12 +180,14 @@ func scanFile(cv CredentialValidator, in, out *os.File) error {
 		return err
 	}
 
+	result := ""
 	for _, c := range cc {
-		result := fmt.Sprintf("\n\nValid IAM key found in file %s:\n\t\t\tAccess Key: %s\n\t\t\tSecret Access Key: %s\n\n", in.Name(), c.Id, c.Secret)
-		_, err = out.Write([]byte(result))
-		if err != nil {
-			return err
-		}
+		result += fmt.Sprintf("\n\nValid IAM key found in file %s:\n\t\t\tAccess Key: %s\n\t\t\tSecret Access Key: %s\n\n", in.Name(), c.Id, c.Secret)
+	}
+
+	_, err = out.Write([]byte(result))
+	if err != nil {
+		return err
 	}
 
 	return nil
