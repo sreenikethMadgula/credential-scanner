@@ -2,7 +2,8 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
+	// "io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -17,16 +18,14 @@ type RepoScanner struct {
 	report   *os.File
 }
 
+// Scans a repository for any valid secrets/credentials;
+// performs a scan on each branch of the repository
 func (r *RepoScanner) ScanRepo() error {
 	dirName := getRepoName(r.repoPath)
-	branches, err := getAllBranches(dirName)
-	if err != nil {
-		fmt.Println("Error getting branches:", err)
-		return err
-	}
+	branches, _ := getAllBranches(dirName)
 
 	for _, branch := range branches {
-		err = r.scanBranch(branch, dirName)
+		err := r.scanBranch(branch, dirName)
 		if err != nil {
 			fmt.Println("Error scanning branch:", err)
 		}
@@ -36,14 +35,12 @@ func (r *RepoScanner) ScanRepo() error {
 
 }
 
+// Scans a branch of repository for valid secrets;
+// performs a scan on each commit of the branch
 func (r *RepoScanner) scanBranch(branch, dirName string) error {
-	err := switchToRef(branch, dirName)
-	if err != nil {
-		fmt.Println("Error switching to branch:", err)
-		return err
-	}
+	switchToRef(branch, dirName)
 
-	msg := fmt.Sprintf("In branch %s\n", branch)
+	msg := fmt.Sprintf("\tBranch: %s\n", branch)
 	fmt.Println(msg)
 	r.report.Write([]byte(msg))
 
@@ -62,13 +59,15 @@ func (r *RepoScanner) scanBranch(branch, dirName string) error {
 	return nil
 }
 
+// Scans a commit for valid secrets;
+// performs a scan on all directories present
 func (r *RepoScanner) scanCommit(commit, dirName string) error {
 	err := switchToRef(commit, dirName)
 	if err != nil {
 		fmt.Println("Error switching to commit:", err)
 		return err
 	}
-	msg := fmt.Sprintf("\tIn commit %s\n", commit)
+	msg := fmt.Sprintf("\t\tCommit: %s\n", commit)
 	fmt.Println(msg)
 	r.report.Write([]byte(msg))
 	err = scanDir(dirName, r.report, r.cv)
@@ -124,12 +123,15 @@ func getAllCommits(dirName string) ([]string, error) {
 	return commits, nil
 }
 
+// Scans a directory for valid secrets;
+// performs a scan on each file in the directory
 func scanDir(dirName string, out *os.File, cv CredentialValidator) error {
-	files, err := ioutil.ReadDir(dirName)
+	files, err := os.ReadDir(dirName)
 	if err != nil {
 		return err
 	}
 
+	// scan each file concurrently
 	wg := sync.WaitGroup{}
 	for _, file := range files {
 		if file.IsDir() {
@@ -148,6 +150,8 @@ func scanDir(dirName string, out *os.File, cv CredentialValidator) error {
 					return
 				}
 
+				// close the file after execution if 
+				// there is no error in opening file
 				defer f.Close()
 
 				if err := scanFile(cv, f, out); err != nil {
@@ -169,8 +173,9 @@ func scanDir(dirName string, out *os.File, cv CredentialValidator) error {
 	return nil
 }
 
+// Scans a file for valid secrets
 func scanFile(cv CredentialValidator, in, out *os.File) error {
-	fileContent, err := ioutil.ReadAll(in)
+	fileContent, err := io.ReadAll(in)
 	if err != nil {
 		return err
 	}
@@ -182,7 +187,7 @@ func scanFile(cv CredentialValidator, in, out *os.File) error {
 
 	result := ""
 	for _, c := range cc {
-		result += fmt.Sprintf("\n\nValid IAM key found in file %s:\n\t\t\tAccess Key: %s\n\t\t\tSecret Access Key: %s\n\n", in.Name(), c.Id, c.Secret)
+		result += fmt.Sprintf("\t\t\tValid secrets found in file %s:\n\t\t\tAccess Key: %s\n\t\t\tSecret Access Key: %s\n\n", in.Name(), c.Id, c.Secret)
 	}
 
 	_, err = out.Write([]byte(result))
@@ -193,6 +198,7 @@ func scanFile(cv CredentialValidator, in, out *os.File) error {
 	return nil
 }
 
+// clone a repository locally; return error if any found
 func cloneRepository(repoPath string) error {
 	cmd := exec.Command("git", "clone", repoPath)
 	err := cmd.Run()
@@ -214,21 +220,21 @@ func main() {
 		return
 	}
 
-	// Get name of local folder
-
+	// create a folder: logs
 	err = os.Mkdir("logs", os.ModePerm)
 	if err != nil {
-		// log.Fatal(err)
 		fmt.Println("Error creating folder - logs:", err)
 	}
 
+	// create a file in logs/ to log the report of scanning
 	f, err := os.OpenFile("logs/"+getRepoName(repoPath)+"-result.txt", os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	rs := RepoScanner{report: f, repoPath: repoPath, cv: awsValidator{}}
-	// Step 2: Traverse through all files in the repository to find potential AWS IAM keys
+	// Traverse through all files in the repository to find potential AWS IAM keys
+	// through all branches and commit history
 	err = rs.ScanRepo()
 	if err != nil {
 		fmt.Println("Error scanning repository:", err)

@@ -13,8 +13,11 @@ import (
 
 const awsKeyPattern = `(?m)(?i)AKIA[0-9A-Z]{16}\s+\S{40}|AWS[0-9A-Z]{38}\s+?\S{40}`
 
+
+// implements CredentialValidator interface
 type awsValidator struct{}
 
+// implementation of Match method specific to AWS
 func (a awsValidator) Match(content string) ([]CloudCredentials, error) {
 	res := []CloudCredentials{}
 	regex := regexp.MustCompile(awsKeyPattern)
@@ -32,6 +35,7 @@ func (a awsValidator) Match(content string) ([]CloudCredentials, error) {
 
 }
 
+// implementation of Validate method specific to AWS
 func (a awsValidator) Validate(c CloudCredentials) bool {
 	return validateIAMKeys(c.Id, c.Secret)
 }
@@ -41,27 +45,21 @@ func isValidIAMKey(accessKeyID string, secretAccessKey string) bool {
 	return validateIAMKeys(accessKeyID, secretAccessKey)
 }
 
-// Clone the repository locally; return any cloning errors
-
 func validateIAMKeys(accessKeyID, secretAccessKey string) bool {
 	// Create a new AWS session with the IAM keys
-	sess, err := session.NewSession(&aws.Config{
+	sess, _ := session.NewSession(&aws.Config{
 		Region:      aws.String("ap-south-1"),
 		Credentials: credentials.NewStaticCredentials(accessKeyID, secretAccessKey, ""),
 	})
-	if err != nil {
-		fmt.Println("Error creating AWS session:", err)
-		return false
-	}
+	// Unnecessary to handle error since session created is static
+	// it doesn't send any request
 
 	// Create a new iam service client using the session
 	svc := iam.New(sess)
 
-	// Perform a basic API call to check the IAM keys' validity
+	// Basic API call to check the IAM keys' validity
 	d, err := svc.ListGroups(&iam.ListGroupsInput{})
 	if err != nil {
-		// fmt.Println("Invalid IAM keys:", err)
-
 		// InvalidClientTokenId error occurs for invalid keys.
 		// If keys are valid, if the role doesn't have permission
 		// to list groups, it returns an AccessDenied error
@@ -73,6 +71,6 @@ func validateIAMKeys(accessKeyID, secretAccessKey string) bool {
 
 	fmt.Print(d)
 
-	// IAM keys are valid
+	// IAM keys are valid and the role has permission to list groups
 	return true
 }
