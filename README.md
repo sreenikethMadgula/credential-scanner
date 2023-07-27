@@ -19,6 +19,13 @@ for example:
 
 The script will attempt to validate the provided Access Key ID by making a basic API call to AWS. The report of the scan will be logged in a `logs` directory under the name `<repo_name>-result.txt` (like `Devops-Node-result.txt`).
 
+## Result Screenshot
+
+The result is stored in a `logs/` directory under the name `<repo_name>-result.txt` (Here `Devops-Node-result.txt`).
+
+<img width="1680" alt="image" src="https://github.com/sreenikethMadgula/credential-scanner/assets/56798332/5fa82c6d-136a-4c72-8743-971d71fd61cd">
+
+
 ## Attempted Enhancements
 1. Extensibility
 
